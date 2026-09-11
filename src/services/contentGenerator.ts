@@ -1,4 +1,5 @@
 import { ContentArticle } from '../types';
+import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 
 export const INITIAL_ARTICLES: ContentArticle[] = [
   {
@@ -79,6 +80,21 @@ export const INITIAL_ARTICLES: ContentArticle[] = [
 ];
 
 export async function generateSEOArticle(topic: string, niche: string): Promise<ContentArticle> {
+  // Real path: call the generate-content Edge Function (Claude API, server-side key).
+  // Falls back to local template generation if Supabase isn't configured or the call fails.
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase.functions.invoke('generate-content', {
+        body: { topic, niche },
+      });
+      if (!error && data && !data.error) {
+        return data as ContentArticle;
+      }
+    } catch (err) {
+      console.warn('generate-content function unavailable, falling back to template:', err);
+    }
+  }
+
   await new Promise((resolve) => setTimeout(resolve, 1000));
 
   const generatedKeyword = `${topic.toLowerCase().replace(/[^a-z0-9 ]/g, '')} guide 2026`;

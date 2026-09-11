@@ -13,6 +13,8 @@ import { INITIAL_LEADS, fetchLiveLeads } from './services/leadScraper';
 import { INITIAL_ARTICLES, generateSEOArticle } from './services/contentGenerator';
 import { INITIAL_WIDGETS } from './services/widgetGenerator';
 import { INITIAL_LOGS, calculateRevenueMetrics } from './services/agentEngine';
+import { supabase, isSupabaseConfigured } from './lib/supabaseClient';
+import * as db from './lib/db';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
@@ -32,8 +34,55 @@ export const App: React.FC = () => {
     minMatchScore: 80
   });
 
+  const [isBackendReady, setIsBackendReady] = useState<boolean>(!isSupabaseConfigured);
+
   // Calculate live revenue metrics
   const revenueMetrics = calculateRevenueMetrics(leads, articles, widgets);
+
+  // ---- Backend bootstrap: sign in anonymously (per-device account), then
+  // load persisted data. Falls back silently to in-memory mock state when
+  // Supabase env vars aren't set — nothing here blocks the demo experience. ----
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+
+    (async () => {
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (!sessionData.session) {
+          await supabase.auth.signInAnonymously();
+        }
+
+        const [dbLeads, dbArticles, dbWidgets, dbLogs, dbSettings] = await Promise.all([
+          db.fetchLeads(),
+          db.fetchArticles(),
+          db.fetchWidgets(),
+          db.fetchLogs(),
+          db.fetchSettings(),
+        ]);
+
+        // First-ever run for this user: seed the DB with the starter demo rows
+        // so the dashboard isn't empty, and so future loads pull from Supabase.
+        if (dbLeads && dbLeads.length === 0) await db.upsertLeads(INITIAL_LEADS);
+        else if (dbLeads) setLeads(dbLeads);
+
+        if (dbArticles && dbArticles.length === 0) {
+          await Promise.all(INITIAL_ARTICLES.map((a) => db.upsertArticle(a)));
+        } else if (dbArticles) setArticles(dbArticles);
+
+        if (dbWidgets && dbWidgets.length === 0) {
+          await Promise.all(INITIAL_WIDGETS.map((w) => db.upsertWidget(w)));
+        } else if (dbWidgets) setWidgets(dbWidgets);
+
+        if (dbLogs && dbLogs.length > 0) setLogs(dbLogs);
+        if (dbSettings) setSettings((prev) => ({ ...prev, ...dbSettings }));
+
+        setIsBackendReady(true);
+      } catch (err) {
+        console.error('Backend bootstrap failed, staying in mock mode:', err);
+        setIsBackendReady(true);
+      }
+    })();
+  }, []);
 
   const addLog = (agentName: 'LeadFinder' | 'ContentEngine' | 'WhiteLabelSaaS' | 'System', level: 'info' | 'success' | 'warning' | 'error', message: string) => {
     const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
@@ -45,6 +94,7 @@ export const App: React.FC = () => {
       message
     };
     setLogs((prev) => [newLog, ...prev.slice(0, 40)]);
+    db.insertLog(newLog);
   };
 
   // Trigger Feed Scan for LeadFinder
@@ -82,6 +132,31 @@ export const App: React.FC = () => {
     setTimeout(() => handleRunAgent('ContentEngine'), 1200);
     setTimeout(() => handleRunAgent('WhiteLabelSaaS'), 2400);
   };
+
+  // Sync-on-change: whenever leads/articles/widgets/settings change (including
+  // edits made directly inside child components), push the full array to
+  // Supabase. Upserts are id-keyed so this is safe to call repeatedly.
+  // Skipped until the initial backend load completes, so we don't clobber
+  // freshly-fetched DB rows with the pre-load in-memory state.
+  useEffect(() => {
+    if (!isSupabaseConfigured || !isBackendReady) return;
+    db.upsertLeads(leads);
+  }, [leads, isBackendReady]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !isBackendReady) return;
+    articles.forEach((a) => db.upsertArticle(a));
+  }, [articles, isBackendReady]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !isBackendReady) return;
+    widgets.forEach((w) => db.upsertWidget(w));
+  }, [widgets, isBackendReady]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !isBackendReady) return;
+    db.saveSettings(settings);
+  }, [settings, isBackendReady]);
 
   // AutoPilot Loop (Interval trigger when active)
   useEffect(() => {

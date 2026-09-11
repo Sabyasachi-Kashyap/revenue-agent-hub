@@ -1,4 +1,5 @@
 import { LeadItem } from '../types';
+import { supabase, isSupabaseConfigured } from '../lib/supabaseClient';
 
 export const INITIAL_LEADS: LeadItem[] = [
   {
@@ -96,6 +97,22 @@ export const INITIAL_LEADS: LeadItem[] = [
 ];
 
 export async function fetchLiveLeads(minBudget: number = 500): Promise<LeadItem[]> {
+  // Real path: call the scan-leads Edge Function (which itself calls RapidAPI
+  // server-side once RAPIDAPI_KEY is set). Falls back to local mock generation
+  // if Supabase isn't configured yet or the function call fails.
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase.functions.invoke('scan-leads', {
+        body: { minBudget },
+      });
+      if (!error && data?.leads) {
+        return [...data.leads, ...INITIAL_LEADS].filter((l: LeadItem) => l.budget >= minBudget);
+      }
+    } catch (err) {
+      console.warn('scan-leads function unavailable, falling back to mock:', err);
+    }
+  }
+
   // Simulate network request to aggregate public job feeds
   await new Promise((resolve) => setTimeout(resolve, 800));
 
